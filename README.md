@@ -241,8 +241,11 @@ sudo chmod 640 /var/log/k3s-audit.log
 > **DaemonSet mode**: Pods cannot reach `127.0.0.1` on the host. Set `HEALERT_HOST=0.0.0.0`
 > so the backend accepts connections from the Docker bridge and pod network:
 > ```bash
-> echo "HEALERT_HOST=0.0.0.0" >> ~/healert-backend/.env
-> ./healert.sh restart
+> ./healert.sh stop backend
+> export HEALERT_HOST=0.0.0.0
+> ./healert.sh start backend
+> Verify backend listens on 0.0.0.0
+> ss -tlnp | grep 8000
 > ```
 
 ### Scoring
