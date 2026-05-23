@@ -419,7 +419,7 @@ Tailing "/var/log/k3s-audit.log" from end-of-file
 
 | Repo | Description |
 |---|---|
-| [healert/backend](https://github.com/healert/backend) | FastAPI + SQLite backend |
+| [healert-io/backend](https://github.com/healert/backend) | FastAPI + SQLite backend |
 | [backstage/community-plugins](https://github.com/backstage/community-plugins) | Backstage plugin (`@backstage-community/plugin-healert`) |
 
 ---
