@@ -249,10 +249,8 @@ sudo chmod 640 /var/log/k3s-audit.log
 
 > **Production**: Deploy backend inside the cluster as a ClusterIP Service.
 > DaemonSet pods reach it via internal DNS — no host exposure needed:
-```yaml
-HEALERT_BACKEND_URL: http://healert-backend.healert-system.svc.cluster.local:8000
-```
-
+> ```yaml
+> HEALERT_BACKEND_URL: http://healert-backend.healert-system.svc.cluster.local:8000
 > ```
 
 ### Scoring
