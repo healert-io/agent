@@ -415,28 +415,6 @@ Tailing "/var/log/k3s-audit.log" from end-of-file
 
 ---
 
-## Known Limitations
-
-- **Secret entity resolution**: TYPE 2 rules (secrets, configmaps) map to the resource name
-  in v0.1.1. Label-based resolution via Kubernetes API is planned for v0.2.0.
-- **Single retry**: One retry on backend failure with 2s delay. Exponential backoff
-  with circuit breaker is planned for v0.3.0.
-- **No Prometheus metrics**: Health observable via logs only. Metrics endpoint
-  planned for v0.3.0.
-
----
-
-## Roadmap
-
-| Version | Features |
-|---|---|
-| v0.1.1 (current) | Auto-namespace resolution, global ignore_namespaces, K8S_NAMESPACE self-awareness, SIGTERM graceful shutdown |
-| v0.2.0 | Kubernetes API label lookup for TYPE 2 rules, RBAC extension |
-| v0.3.0 | Hot-reload rules, exponential backoff, Prometheus metrics |
-| v0.4.0 | GitHub and ArgoCD integrations |
-
----
-
 ## Related Repositories
 
 | Repo | Description |
@@ -448,6 +426,6 @@ Tailing "/var/log/k3s-audit.log" from end-of-file
 
 ## License
 
-Apache License 2.0 -- Copyright 2026 Healert OU
+Apache License 2.0 -- Copyright 2026 Healert OÜ
 
 See [LICENSE](./LICENSE) for the full license text.
