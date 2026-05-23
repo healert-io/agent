@@ -1,0 +1,388 @@
+# =============================================================================
+# daemonset.yaml — Healert Agent Kubernetes DaemonSet v0.1.1
+# =============================================================================
+#
+# Copyright 2026 Healert OÜ
+# Licensed under the Apache License, Version 2.0
+# https://www.apache.org/licenses/LICENSE-2.0
+#
+# =============================================================================
+# WHAT THIS FILE CREATES
+# =============================================================================
+#
+# Four Kubernetes resources in order:
+#
+#   1. Namespace      healert-system
+#                     Isolated namespace for all Healert resources.
+#
+#   2. ServiceAccount healert-agent
+#                     Pod identity. No RBAC needed — agent reads only
+#                     the audit log via hostPath, makes no K8s API calls.
+#                     automountServiceAccountToken: false for security.
+#
+#   3. NetworkPolicy  healert-agent-network-policy
+#                     Egress: backend port 8000 + DNS port 53 only.
+#                     Ingress: none — agent makes no inbound connections.
+#
+#   4. DaemonSet      healert-agent
+#                     One pod per node. Distroless image. Full security
+#                     hardening. Tolerates control-plane nodes so the
+#                     agent runs where the audit log is written.
+#
+# =============================================================================
+# BEFORE YOU APPLY — REQUIRED STEPS
+# =============================================================================
+#
+#  Step 1: Enable Kubernetes audit logging
+#    k3s:
+#      sudo cp audit-policy.yaml /etc/k3s/audit-policy.yaml
+#      sudo systemctl restart k3s
+#      ls -lh /var/log/k3s-audit.log   # must exist
+#
+#    kubeadm:
+#      Edit /etc/kubernetes/manifests/kube-apiserver.yaml
+#      Add: --audit-log-path=/var/log/kubernetes/audit/audit.log
+#           --audit-policy-file=/etc/kubernetes/audit-policy.yaml
+#
+#  Step 2: Build and push Docker image
+#    cd ~/healert-final/agent-final
+#    docker build -t ghcr.io/healert/agent:0.1.1 .
+#    docker push ghcr.io/healert/agent:0.1.1
+#    Update image: field in this file.
+#
+#  Step 3: Set your backend host IP
+#    hostname -I | awk '{print $1}'
+#    Update HEALERT_BACKEND_URL below with your host IP.
+#    k3s pods CANNOT reach 127.0.0.1 — use the actual host IP.
+#
+#  Step 4: Deploy
+#    export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+#    ./healert.sh start kubernetes
+#
+# =============================================================================
+# UPDATE RULES WITHOUT REBUILDING IMAGE
+# =============================================================================
+#
+#   Create ConfigMap from rules.yaml:
+#     kubectl create configmap healert-rules \
+#       --from-file=rules.yaml=./rules.yaml \
+#       -n healert-system
+#
+#   Then uncomment the rules volume and volumeMount below (search: CONFIG MAP).
+#   The agent loads rules from /etc/healert/rules.yaml via RULES_PATH env.
+#
+#   Update rules without rebuilding:
+#     kubectl create configmap healert-rules \
+#       --from-file=rules.yaml=./rules.yaml \
+#       -n healert-system \
+#       --dry-run=client -o yaml | kubectl apply -f -
+#     kubectl rollout restart daemonset/healert-agent -n healert-system
+#
+# =============================================================================
+# DEPLOY AND REMOVE
+# =============================================================================
+#
+#   Deploy (recommended):
+#     export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+#     ./healert.sh start kubernetes
+#
+#   Deploy (manual):
+#     kubectl create namespace healert-system
+#     kubectl create secret generic healert-api-key \
+#       --from-literal=HEALERT_API_KEY=$(grep HEALERT_API_KEY .env | cut -d= -f2-) \
+#       -n healert-system
+#     kubectl apply -f daemonset.yaml
+#
+#   Verify:
+#     kubectl get pods -n healert-system -o wide
+#     kubectl logs -n healert-system -l app=healert-agent --tail=20
+#
+#   Remove:
+#     ./healert.sh stop kubernetes
+#
+# =============================================================================
+
+---
+# ── Resource 1: Namespace ─────────────────────────────────────────────────────
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: healert-system
+  labels:
+    app.kubernetes.io/name:    healert
+    app.kubernetes.io/part-of: healert
+    app.kubernetes.io/version: "0.1.1"
+
+---
+# ── Resource 2: ServiceAccount ────────────────────────────────────────────────
+# No RBAC rules attached — agent reads audit log via hostPath only.
+# automountServiceAccountToken: false — token never mounted into pod.
+# v0.2.0 will add get on secrets/configmaps for label-based entity resolution.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name:      healert-agent
+  namespace: healert-system
+  labels:
+    app.kubernetes.io/name:    healert-agent
+    app.kubernetes.io/part-of: healert
+    app.kubernetes.io/version: "0.1.1"
+automountServiceAccountToken: false
+
+---
+# ── Resource 3: NetworkPolicy ─────────────────────────────────────────────────
+# Principle of least privilege — agent only needs:
+#   Egress port 8000: send friction events to backend
+#   Egress port 53:   DNS resolution for backend URL
+#   No ingress:       agent makes no inbound connections
+# All other traffic blocked — including to Kubernetes API server.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name:      healert-agent-network-policy
+  namespace: healert-system
+  labels:
+    app.kubernetes.io/name:    healert-agent
+    app.kubernetes.io/part-of: healert
+spec:
+  podSelector:
+    matchLabels:
+      app: healert-agent
+  policyTypes:
+    - Ingress
+    - Egress
+  # No ingress rules — agent accepts no inbound connections
+  ingress: []
+  egress:
+    # Healert backend — send friction events
+    - ports:
+        - protocol: TCP
+          port:     8000
+    # DNS — resolve backend hostname
+    - ports:
+        - protocol: UDP
+          port:     53
+        - protocol: TCP
+          port:     53
+
+---
+# ── Resource 4: DaemonSet ─────────────────────────────────────────────────────
+# One agent pod per node. Kubernetes schedules and restarts automatically.
+# Rolling update strategy — replaces pods one at a time, no detection gaps.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name:      healert-agent
+  namespace: healert-system
+  labels:
+    app:                         healert-agent
+    app.kubernetes.io/name:      healert-agent
+    app.kubernetes.io/version:   "0.1.1"
+    app.kubernetes.io/component: agent
+    app.kubernetes.io/part-of:   healert
+  annotations:
+    # Record when this DaemonSet was last updated
+    healert.io/deployed: "2026-01-01T00:00:00Z"
+spec:
+  selector:
+    matchLabels:
+      app: healert-agent
+
+  # Rolling update — replace pods one at a time
+  # maxUnavailable: 1 means at most one node has no agent during updates
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+
+  template:
+    metadata:
+      labels:
+        app:                      healert-agent
+        app.kubernetes.io/name:   healert-agent
+        app.kubernetes.io/version: "0.1.1"
+      annotations:
+        # Ensures pods restart when ConfigMap rules change (if using ConfigMap)
+        healert.io/rules-checksum: "bundled"
+    spec:
+
+      # ── Tolerations ─────────────────────────────────────────────────────────
+      # Agent MUST run on control-plane nodes — the Kubernetes API server
+      # runs there and writes audit events to the audit log on that node.
+      # Without this toleration the agent misses all audit events on
+      # control-plane nodes.
+      tolerations:
+        - key:      node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect:   NoSchedule
+        - key:      node-role.kubernetes.io/master
+          operator: Exists
+          effect:   NoSchedule
+
+      # Use the healert-agent ServiceAccount (no token mounted)
+      serviceAccountName: healert-agent
+
+      # ── Pod Security Context ─────────────────────────────────────────────────
+      # Pod-level security — applies to all containers in the pod.
+      # fsGroup: 65532 allows the pod to read group-owned files.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser:    65532
+        runAsGroup:   65532
+        fsGroup:      65532
+
+      # ── Priority ─────────────────────────────────────────────────────────────
+      # system-node-critical ensures the agent is not evicted under pressure.
+      # The agent is critical infrastructure — eviction causes detection gaps.
+      priorityClassName: system-node-critical
+
+      # ── Containers ──────────────────────────────────────────────────────────
+      containers:
+        - name: healert-agent
+
+          # ── Image ─────────────────────────────────────────────────────────────
+          # Distroless image — no shell, no package manager, uid=65532.
+          # Build: docker build -t ghcr.io/healert/agent:0.1.1 .
+          # Push:  docker push ghcr.io/healert/agent:0.1.1
+          # Then update the image tag here to match your push.
+          image:           ghcr.io/healert/agent:0.1.1
+          imagePullPolicy: IfNotPresent
+
+          # ── Environment Variables ────────────────────────────────────────────
+          env:
+            # =================================================================
+            # REQUIRED: Update HEALERT_BACKEND_URL to your backend host IP.
+            # k3s pods CANNOT reach 127.0.0.1 — use your actual host IP.
+            # Find it: hostname -I | awk '{print $1}'
+            #
+            # If backend runs in-cluster as a Service:
+            #   http://healert-backend.healert-system.svc.cluster.local:8000
+            # If backend runs on the host (local development):
+            #   http://192.168.x.x:8000   (replace with your host IP)
+            # =================================================================
+            - name:  HEALERT_BACKEND_URL
+              value: "http://192.168.1.140:8000"
+
+            # API key — loaded from Kubernetes Secret, never hardcoded here.
+            # Created automatically by: ./healert.sh start kubernetes
+            # Or manually:
+            #   kubectl create secret generic healert-api-key \
+            #     --from-literal=HEALERT_API_KEY=your-key \
+            #     -n healert-system
+            - name: HEALERT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: healert-api-key
+                  key:  HEALERT_API_KEY
+
+            # Audit log path on the host node.
+            # MUST match the hostPath.path in the volumes section below.
+            # k3s:     /var/log/k3s-audit.log
+            # kubeadm: /var/log/kubernetes/audit/audit.log
+            - name:  AUDIT_LOG_PATH
+              value: "/var/log/k3s-audit.log"
+
+            # Backstage catalog namespace.
+            # Must match the namespace in your Backstage catalog entities.
+            # Default is "default" which matches most Backstage setups.
+            - name:  ENTITY_NAMESPACE
+              value: "default"
+
+            # Rules file path inside the container.
+            # Default: /rules.yaml — bundled in the Docker image.
+            # To use a ConfigMap instead (no image rebuild on rule changes):
+            #   1. Create ConfigMap (see UPDATE RULES section at top)
+            #   2. Change value to: /etc/healert/rules.yaml
+            #   3. Uncomment the rules volume and volumeMount below
+            - name:  RULES_PATH
+              value: "/rules.yaml"
+
+            # Agent namespace — injected automatically via Kubernetes Downward API.
+            # The agent uses this to auto-exclude its own namespace from detection.
+            # This prevents the DaemonSet deployment from generating false friction.
+            # No manual update needed — always resolves to the pod's own namespace.
+            - name: K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+
+          # ── Volume Mounts ────────────────────────────────────────────────────
+          volumeMounts:
+            # Read-only mount of the host audit log.
+            # Agent tails from EOF — never writes to host filesystem.
+            - name:      audit-log
+              mountPath: /var/log/k3s-audit.log
+              readOnly:  true
+
+            # CONFIG MAP: Uncomment to load rules from ConfigMap instead
+            # of the bundled /rules.yaml — allows rule updates without rebuild.
+            # Requires: kubectl create configmap healert-rules \
+            #   --from-file=rules.yaml=./rules.yaml -n healert-system
+            #
+            # - name:      rules
+            #   mountPath: /etc/healert/rules.yaml
+            #   subPath:   rules.yaml
+            #   readOnly:  true
+
+          # ── Resource Limits ──────────────────────────────────────────────────
+          # Agent is lightweight: sequential log reads + one HTTP call per event.
+          # Requests: guaranteed allocation on every node.
+          # Limits:   hard cap — agent is killed and restarted if exceeded.
+          resources:
+            requests:
+              memory: "32Mi"
+              cpu:    "50m"
+            limits:
+              memory: "128Mi"
+              cpu:    "200m"
+
+          # ── Container Security Context ───────────────────────────────────────
+          # Container-level security — must match image user (uid=65532).
+          # readOnlyRootFilesystem: agent writes nothing to the container fs.
+          # allowPrivilegeEscalation: false — cannot gain root even via setuid.
+          # capabilities.drop ALL — zero Linux capabilities needed.
+          securityContext:
+            runAsNonRoot:             true
+            runAsUser:                65532
+            runAsGroup:               65532
+            readOnlyRootFilesystem:   true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+
+          # No liveness probe — distroless has no /bin/sh for exec probes.
+          # Pod restarts automatically on crash via restartPolicy: Always.
+          # Use kubectl logs to diagnose issues.
+
+      # ── Volumes ──────────────────────────────────────────────────────────────
+      volumes:
+        # Host audit log — read-only hostPath mount.
+        # type: File — pod FAILS TO START if audit logging is not enabled.
+        # This prevents silent failures where the agent starts but detects nothing.
+        # MUST match AUDIT_LOG_PATH env and AUDIT_LOG_PATH in the container.
+        - name: audit-log
+          hostPath:
+            path: /var/log/k3s-audit.log
+            type: File
+
+        # CONFIG MAP: Uncomment to enable rule updates without image rebuild.
+        #
+        # - name: rules
+        #   configMap:
+        #     name: healert-rules
+        #     defaultMode: 0444   # readable by nonroot (uid=65532)
+
+      # ── Pod Network and Host Settings ────────────────────────────────────────
+      # Never share host namespaces — agent is fully isolated.
+      hostNetwork: false
+      hostPID:     false
+      hostIPC:     false
+
+      # Always restart the container if it exits for any reason.
+      restartPolicy: Always
+
+      # ── Termination Grace Period ─────────────────────────────────────────────
+      # 30 seconds for the agent to finish sending any buffered events
+      # before the pod is force-killed during node drain or rolling update.
+      terminationGracePeriodSeconds: 30

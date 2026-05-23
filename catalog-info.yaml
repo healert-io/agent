@@ -1,0 +1,9 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: healert-agent
+  description: Healert Agent — Kubernetes audit log friction detector
+spec:
+  type: service
+  lifecycle: production
+  owner: healert

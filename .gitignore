@@ -1,0 +1,12 @@
+# Secrets
+.env
+.agent-config
+# Compiled binary
+healert-agent
+# Runtime
+.logs/
+.pids/
+# Database
+*.db
+*.db-shm
+*.db-wal

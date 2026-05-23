@@ -1,0 +1,520 @@
+# =============================================================================
+# rules.yaml — Healert Agent Detection Rules v0.1.1
+# =============================================================================
+#
+# Copyright 2026 Healert OÜ
+# Licensed under the Apache License, Version 2.0
+# https://www.apache.org/licenses/LICENSE-2.0
+#
+# Agent:   github.com/healert/agent
+# Backend: github.com/healert/backend
+# Plugin:  @backstage-community/plugin-healert
+#
+# =============================================================================
+# HOW TO USE
+# =============================================================================
+#
+#   1. Edit this file to add or enable rules
+#   2. Validate:  ./healert.sh validate
+#   3. Restart:   ./healert.sh restart
+#   4. Verify:    ./healert.sh logs  →  watch for [200] events
+#
+# =============================================================================
+# BUILT-IN NOISE FILTERS (applied to ALL rules automatically)
+# =============================================================================
+#
+# The agent always excludes these namespaces from every rule — no configuration
+# needed. They generate Kubernetes-internal events that are never friction:
+#
+#   kube-system       Kubernetes core components (scheduler, controller, dns)
+#   kube-public       Kubernetes public cluster data
+#   kube-node-lease   Kubernetes node heartbeat leases
+#   healert-system    Healert agent namespace — never monitors itself
+#
+# The agent also always excludes these actors (when ignore_system: true):
+#
+#   system:serviceaccount:*     All Kubernetes service accounts
+#   system:node:*               Node kubelet processes
+#   system:kube-*               Kubernetes internal controllers
+#   system:k3s-*                k3s internal processes
+#
+# Human operators are always detected:
+#   system:admin                kubectl with admin kubeconfig
+#   system:masters              Admin group membership
+#   dev@company.com             OIDC-authenticated users
+#
+# =============================================================================
+# RULE TYPES — ENTITY RESOLUTION
+# =============================================================================
+#
+# How audit events map to Backstage catalog entities:
+#
+#   TYPE 1 — WORKLOAD   objectRef.name = pod or workload name
+#                       Agent auto-strips hash suffixes:
+#                       my-service-b4c7fb94f-xyz → component:default/my-service
+#                       Rules: kubectl-exec, config-drift, port-forward,
+#                              pipeline-skip, pod-log-access, hpa-drift
+#
+#   TYPE 2 — SHARED     objectRef.name = secret or configmap name
+#                       Maps to resource name in catalog:
+#                       secret: db-creds → component:default/db-creds
+#                       Rules: emergency-access, secret-deletion, configmap-drift
+#
+#   TYPE 3 — CLUSTER    objectRef.name = namespace or node name
+#                       Maps to resource name in catalog.
+#                       Rules: namespace-creation, rbac-change, node-access
+#
+#   TYPE 4 — NETWORK    objectRef.name = ingress or networkpolicy name
+#                       Rules: ingress-drift, network-policy-deletion
+#
+#   TYPE 5 — STORAGE    objectRef.name = PV or StorageClass name
+#                       Rules: pv-deletion
+#
+# =============================================================================
+# RULE FIELDS
+# =============================================================================
+#
+#   name               Unique identifier — appears as event.type in plugin
+#                      Format: lowercase letters, digits, hyphens
+#
+#   description        Human-readable message shown in plugin and PDF
+#                      Tokens: {actor} {resource} {name} {namespace} {verb}
+#
+#   severity           high=10pts  medium=6pts  low=3pts
+#                      Score = min(100, weighted_total / threshold × 100)
+#                      Weight decays by half every 7 days (configurable)
+#
+#   workflow           deploy | incident | debug | rollback | release
+#
+#   ignore_system      true  = skip k8s controllers, detect human operators
+#                      false = detect all actors including service accounts
+#
+#   match fields:
+#     resource         Single resource:  pods | secrets | deployments
+#     resources        List of resources (event must match one)
+#     subresource      API subresource:  exec | portforward | log
+#     verb             Single verb:      get | create | patch | delete
+#     verbs            List of verbs (event must match one)
+#     annotation       Required annotation: "key=value"
+#     namespace_contains  Case-insensitive namespace substring include filter
+#     ignore_namespaces   List of exact namespaces to exclude (in addition
+#                         to built-in exclusions above)
+#
+# =============================================================================
+
+
+# =============================================================================
+# GLOBAL CONFIGURATION
+# =============================================================================
+#
+# The config block applies to ALL rules — no per-rule changes needed.
+# Add any system namespaces in your cluster to ignore_namespaces.
+#
+# The agent ALSO auto-excludes its own namespace (K8S_NAMESPACE env var)
+# regardless of this list — the DaemonSet never monitors itself.
+#
+# Built-in always-excluded (no configuration needed):
+#   The agent reads K8S_NAMESPACE from the DaemonSet environment and
+#   always excludes it. For local mode, set: export K8S_NAMESPACE=healert-system
+#
+# Add your cluster's system namespaces here:
+
+config:
+  ignore_namespaces:
+    - kube-system          # Kubernetes core: scheduler, controller, coredns
+    - kube-public          # Kubernetes public cluster data
+    - kube-node-lease      # Kubernetes node heartbeat leases
+    - cert-manager         # Certificate management (if installed)
+    - istio-system         # Istio service mesh (if installed)
+    - monitoring           # Prometheus/Grafana stack (if installed)
+    - argocd               # ArgoCD GitOps (if installed)
+    - vault                # Vault secret management (if installed)
+    # Add your own system namespaces below:
+    # - my-platform-system
+
+
+rules:
+
+  # ===========================================================================
+  # ACTIVE RULES (5) — Production ready, tested on k3s
+  # ===========================================================================
+
+  # ---------------------------------------------------------------------------
+  # kubectl-exec                                                     TYPE 1
+  #
+  # Detects engineers running commands directly inside running pods.
+  # Every exec bypasses code review, audit trail, and change controls.
+  # Engineers should use the GitOps pipeline — not direct pod access.
+  #
+  # Example trigger:
+  #   kubectl exec -it payments-api-pod -- /bin/bash
+  #   kubectl exec payments-api-pod -- python manage.py migrate
+  #
+  # Audit event: verb=get  resource=pods  subresource=exec
+  # ---------------------------------------------------------------------------
+  - name: kubectl-exec
+    description: "kubectl exec on {resource}/{name} (ns:{namespace}) by {actor}"
+    severity: high
+    workflow: deploy
+    ignore_system: true
+    match:
+      resource: pods
+      subresource: exec
+
+  # ---------------------------------------------------------------------------
+  # pipeline-skip                                                    TYPE 1
+  #
+  # Detects deployments annotated with a policy bypass flag.
+  # Engineers add bypass annotations to skip admission policy checks
+  # during incidents — but this leaves a permanent gap in the audit trail.
+  #
+  # Example trigger:
+  #   kubectl annotate deployment payments-api \
+  #     policy.admission.k8s.io/bypass=true
+  #
+  # Audit event: verb=patch  resource=deployments
+  #              annotation=policy.admission.k8s.io/bypass=true
+  #
+  # Note: Only fires on write verbs (patch/update/create) — not on verb=get
+  #       which is the pre-read Kubernetes does before every kubectl annotate.
+  # ---------------------------------------------------------------------------
+  - name: pipeline-skip
+    description: "Policy gate bypassed on {resource}/{name} (ns:{namespace}) by {actor}"
+    severity: high
+    workflow: deploy
+    ignore_system: true
+    match:
+      verbs:
+        - patch
+        - update
+        - create
+      annotation: "policy.admission.k8s.io/bypass=true"
+
+  # ---------------------------------------------------------------------------
+  # config-drift                                                     TYPE 1
+  #
+  # Detects direct modification of workload resources bypassing GitOps.
+  # When engineers directly patch deployments, the cluster state drifts
+  # from git — the next ArgoCD sync reverts the change unexpectedly.
+  #
+  # Example triggers:
+  #   kubectl patch deployment payments-api -p '{"spec":{"replicas":5}}'
+  #   kubectl set image deployment/payments-api app=myimage:v2
+  #   kubectl scale deployment payments-api --replicas=0
+  #
+  # Audit event: verb=patch|update  resource=deployments|pods|statefulsets
+  #
+  # Note: Only fires on write verbs — not on verb=get.
+  #       kubectl patch does verb=get (pre-read) THEN verb=patch (actual change).
+  #       Without verb filter both would fire — double counting every drift.
+  # ---------------------------------------------------------------------------
+  - name: config-drift
+    description: "Direct {verb} on {resource}/{name} (ns:{namespace}) by {actor}"
+    severity: high
+    workflow: deploy
+    ignore_system: true
+    match:
+      resources:
+        - pods
+        - deployments
+        - statefulsets
+        - daemonsets
+        - replicasets
+        - jobs
+        - cronjobs
+      verbs:
+        - create
+        - update
+        - patch
+
+  # ---------------------------------------------------------------------------
+  # port-forward                                                     TYPE 1
+  #
+  # Detects direct port-forwarding to pods — bypasses service mesh and ingress.
+  # Exposes internal services to the developer's machine, bypassing all
+  # network policies, observability, and access controls.
+  # Common pattern: developers port-forward to access databases directly.
+  #
+  # Example triggers:
+  #   kubectl port-forward pod/payments-api-pod 5432:5432
+  #   kubectl port-forward deployment/payments-api 8080:8080
+  #
+  # Audit event: verb=create  resource=pods  subresource=portforward
+  # ---------------------------------------------------------------------------
+  - name: port-forward
+    description: "kubectl port-forward to {resource}/{name} (ns:{namespace}) by {actor}"
+    severity: medium
+    workflow: debug
+    ignore_system: true
+    match:
+      resource: pods
+      subresource: portforward
+
+  # ---------------------------------------------------------------------------
+  # emergency-access                                                 TYPE 2
+  #
+  # Detects engineers reading Kubernetes Secrets directly via kubectl.
+  # Secrets should be accessed by applications via mounted volumes or
+  # CSI secret drivers — never by engineers via kubectl.
+  # Direct secret access is a security risk and an audit trail gap.
+  #
+  # Example triggers:
+  #   kubectl get secret db-credentials -o yaml
+  #   kubectl get secret jwt-signing-key -n production
+  #
+  # Audit event: verb=get  resource=secrets
+  #
+  # Note: TYPE 2 rule — maps to secret name in Backstage catalog.
+  #       secret: db-credentials → component:default/db-credentials
+  # ---------------------------------------------------------------------------
+  - name: emergency-access
+    description: "Direct secret access: {name} in {namespace} by {actor}"
+    severity: medium
+    workflow: incident
+    ignore_system: true
+    match:
+      resource: secrets
+      verb: get
+
+
+  # ===========================================================================
+  # OPTIONAL RULES — uncomment to enable
+  # All validated and production-tested.
+  # ===========================================================================
+
+  # ---------------------------------------------------------------------------
+  # pod-log-access                                                   TYPE 1
+  # Severity: low — common and usually benign
+  #
+  # Detects direct log streaming via kubectl logs.
+  # Low severity — enable if you want full debugging visibility.
+  # Generates high volume in active clusters — consider namespace scoping.
+  # ---------------------------------------------------------------------------
+  # - name: pod-log-access
+  #   description: "Direct log access on {name} (ns:{namespace}) by {actor}"
+  #   severity: low
+  #   workflow: debug
+  #   ignore_system: true
+  #   match:
+  #     resource: pods
+  #     subresource: log
+  #     verb: get
+
+  # ---------------------------------------------------------------------------
+  # hpa-drift                                                        TYPE 1
+  # Severity: medium
+  #
+  # Detects direct HPA modification outside of GitOps.
+  # Common incident response pattern: engineers manually scale services
+  # without updating the HPA definition in git.
+  # ---------------------------------------------------------------------------
+  # - name: hpa-drift
+  #   description: "HPA modified directly: {name} (ns:{namespace}) by {actor}"
+  #   severity: medium
+  #   workflow: incident
+  #   ignore_system: true
+  #   match:
+  #     resource: horizontalpodautoscalers
+  #     verbs:
+  #       - create
+  #       - update
+  #       - patch
+
+  # ---------------------------------------------------------------------------
+  # production-secret-access                                         TYPE 2
+  # Severity: high — production namespace scoped
+  #
+  # More targeted than emergency-access — only fires in production.
+  # Use alongside emergency-access for tiered severity:
+  #   any namespace    → emergency-access  (medium)
+  #   production only  → production-secret-access (high)
+  # ---------------------------------------------------------------------------
+  # - name: production-secret-access
+  #   description: "Production secret accessed: {name} in {namespace} by {actor}"
+  #   severity: high
+  #   workflow: incident
+  #   ignore_system: true
+  #   match:
+  #     resource: secrets
+  #     verb: get
+  #     namespace_contains: production
+
+  # ---------------------------------------------------------------------------
+  # secret-deletion                                                  TYPE 2
+  # Severity: high — destructive, immediate impact
+  #
+  # Detects secrets deleted directly — cannot be undone and causes
+  # immediate application failures for services that depend on the secret.
+  # ---------------------------------------------------------------------------
+  # - name: secret-deletion
+  #   description: "Secret deleted: {name} in {namespace} by {actor}"
+  #   severity: high
+  #   workflow: incident
+  #   ignore_system: true
+  #   match:
+  #     resource: secrets
+  #     verb: delete
+
+  # ---------------------------------------------------------------------------
+  # configmap-drift                                                  TYPE 2
+  # Severity: medium
+  #
+  # Detects ConfigMap changes made directly outside of GitOps pipeline.
+  # ConfigMaps often contain application configuration — direct changes
+  # cause config drift between cluster state and git.
+  # ---------------------------------------------------------------------------
+  # - name: configmap-drift
+  #   description: "ConfigMap changed directly: {name} in {namespace} by {actor}"
+  #   severity: medium
+  #   workflow: deploy
+  #   ignore_system: true
+  #   match:
+  #     resource: configmaps
+  #     verbs:
+  #       - create
+  #       - update
+  #       - patch
+  #       - delete
+
+  # ---------------------------------------------------------------------------
+  # namespace-creation                                               TYPE 3
+  # Severity: medium
+  #
+  # Detects namespaces created outside of provisioning pipeline.
+  # Platform teams should provision namespaces via IaC (Terraform, Helm).
+  # Ad-hoc namespace creation bypasses quota and policy controls.
+  # ---------------------------------------------------------------------------
+  # - name: namespace-creation
+  #   description: "Namespace created directly: {name} by {actor}"
+  #   severity: medium
+  #   workflow: deploy
+  #   ignore_system: true
+  #   match:
+  #     resource: namespaces
+  #     verb: create
+
+  # ---------------------------------------------------------------------------
+  # rbac-change                                                      TYPE 3
+  # Severity: high — security-critical
+  #
+  # Detects RBAC role and binding changes.
+  # RBAC changes should always go through a security review process.
+  # ignore_system: false — some RBAC changes are made by controllers.
+  # ---------------------------------------------------------------------------
+  # - name: rbac-change
+  #   description: "RBAC modified: {resource}/{name} by {actor}"
+  #   severity: high
+  #   workflow: deploy
+  #   ignore_system: false
+  #   match:
+  #     resources:
+  #       - clusterroles
+  #       - clusterrolebindings
+  #       - roles
+  #       - rolebindings
+  #     verbs:
+  #       - create
+  #       - update
+  #       - patch
+  #       - delete
+
+  # ---------------------------------------------------------------------------
+  # node-access                                                      TYPE 3
+  # Severity: medium
+  #
+  # Detects direct node modification — unusual outside SRE/platform work.
+  # Should be performed via node management tooling, not direct kubectl.
+  # ---------------------------------------------------------------------------
+  # - name: node-access
+  #   description: "Node modified directly: {name} by {actor}"
+  #   severity: medium
+  #   workflow: incident
+  #   ignore_system: true
+  #   match:
+  #     resource: nodes
+  #     verbs:
+  #       - patch
+  #       - update
+
+  # ---------------------------------------------------------------------------
+  # ingress-drift                                                    TYPE 4
+  # Severity: high
+  #
+  # Detects ingress rules changed directly outside of GitOps.
+  # Direct ingress changes affect traffic routing immediately and
+  # bypass change review — a common source of production incidents.
+  # ---------------------------------------------------------------------------
+  # - name: ingress-drift
+  #   description: "Ingress changed directly: {name} in {namespace} by {actor}"
+  #   severity: high
+  #   workflow: deploy
+  #   ignore_system: true
+  #   match:
+  #     resource: ingresses
+  #     verbs:
+  #       - create
+  #       - update
+  #       - patch
+  #       - delete
+
+  # ---------------------------------------------------------------------------
+  # network-policy-deletion                                          TYPE 4
+  # Severity: high — removes security boundaries immediately
+  #
+  # Detects NetworkPolicy deleted directly.
+  # Deleting a NetworkPolicy immediately removes all traffic restrictions
+  # for the affected pods — a critical security event.
+  # ---------------------------------------------------------------------------
+  # - name: network-policy-deletion
+  #   description: "NetworkPolicy deleted: {name} in {namespace} by {actor}"
+  #   severity: high
+  #   workflow: incident
+  #   ignore_system: true
+  #   match:
+  #     resource: networkpolicies
+  #     verb: delete
+
+  # ---------------------------------------------------------------------------
+  # pv-deletion                                                      TYPE 5
+  # Severity: high — destructive and irreversible
+  #
+  # Detects PersistentVolume deleted directly.
+  # PV deletion is destructive — data may be permanently lost.
+  # Should always go through a formal data management process.
+  # ---------------------------------------------------------------------------
+  # - name: pv-deletion
+  #   description: "PersistentVolume deleted: {name} by {actor}"
+  #   severity: high
+  #   workflow: incident
+  #   ignore_system: true
+  #   match:
+  #     resource: persistentvolumes
+  #     verb: delete
+
+
+# =============================================================================
+# RULE TEMPLATE — add a new rule
+# =============================================================================
+#
+#   1. Identify rule type (see RULE TYPES above)
+#   2. Copy block below into the ACTIVE RULES section
+#   3. Fill in all fields
+#   4. Run: ./healert.sh validate
+#   5. Run: ./healert.sh restart
+#   6. Trigger a test event and watch: ./healert.sh logs
+#
+# - name: my-new-rule
+#   description: "{verb} on {resource}/{name} (ns:{namespace}) by {actor}"
+#   severity: high                  # high | medium | low
+#   workflow: deploy                # deploy | incident | debug | rollback | release
+#   ignore_system: true             # true = skip k8s controllers
+#   match:
+#     resource: pods                # single resource (or use resources: list)
+#     subresource: exec             # omit if not needed
+#     verb: get                     # single verb (or use verbs: list)
+#     # annotation: "key=value"     # uncomment if annotation match needed
+#     # namespace_contains: prod    # uncomment to scope to specific namespace
+#     # ignore_namespaces:          # uncomment to exclude specific namespaces
+#     #   - staging
+#
+# =============================================================================
