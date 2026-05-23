@@ -238,7 +238,7 @@ sudo chmod 640 /var/log/k3s-audit.log
 | `HEALERT_API_KEY` | required | Bearer token for backend auth |
 | `K8S_NAMESPACE` | auto (Downward API) | Agent namespace — auto-excluded from detection |
 
-> **DaemonSet mode**: Pods cannot reach `127.0.0.1` on the host. Set `HEALERT_HOST=0.0.0.0`
+> **DaemonSet mode - Development only**: Pods cannot reach `127.0.0.1` on the host. Set `HEALERT_HOST=0.0.0.0`
 > so the backend accepts connections from the Docker bridge and pod network:
 > ```bash
 > ./healert.sh stop backend
@@ -246,6 +246,13 @@ sudo chmod 640 /var/log/k3s-audit.log
 > ./healert.sh start backend
 > Verify backend listens on 0.0.0.0
 > ss -tlnp | grep 8000
+
+> **Production**: Deploy backend inside the cluster as a ClusterIP Service.
+> DaemonSet pods reach it via internal DNS — no host exposure needed:
+```yaml
+HEALERT_BACKEND_URL: http://healert-backend.healert-system.svc.cluster.local:8000
+```
+
 > ```
 
 ### Scoring
