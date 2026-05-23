@@ -261,7 +261,7 @@ spec:
             #   http://192.168.x.x:8000   (replace with your host IP)
             # =================================================================
             - name:  HEALERT_BACKEND_URL
-              value: "http://192.168.1.140:8000"
+              value: "http://x.x.x.x:8000"
 
             # API key — loaded from Kubernetes Secret, never hardcoded here.
             # Created automatically by: ./healert.sh start kubernetes
