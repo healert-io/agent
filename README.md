@@ -82,6 +82,10 @@ healert-agent/
 |                   Features:  K8S_NAMESPACE Downward API, system-node-critical priority
 |                              30s termination grace period, rolling update strategy
 |
+|
++-- example.audit-policy.yaml (Tells the Kubernetes API server which events to write to the audit log and at what detail level.)
+|
+|
 +-- go.mod          Go module (zero external dependencies)
 |
 +-- .env.example    Configuration template
@@ -112,17 +116,20 @@ git clone https://github.com/healert/agent.git
 cd agent
 go build -o healert-agent main.go
 
-# 2. Check dependencies
-./healert.sh deps
-
-# 3. Configure directories
+# 2. Configure directories
 ./healert.sh init
+
+# 3. Check dependencies
+./healert.sh deps
 
 # 4. Generate API key and configure both sides
 ./healert.sh setup
 
 # 5. Set audit log path (k3s)
 ./healert.sh configure --audit-log /var/log/k3s-audit.log
+Note: if the audit log file is not found
+sudo touch /var/log/k3s-audit.log
+sudo chmod 644 /var/log/k3s-audit.log
 
 # 6. Validate rules
 ./healert.sh validate
@@ -143,7 +150,7 @@ go build -o healert-agent main.go
 ```bash
 # Create audit policy
 sudo mkdir -p /etc/k3s
-sudo cp audit-policy.yaml /etc/k3s/audit-policy.yaml
+sudo cp example.audit-policy.yaml /etc/k3s/audit-policy.yaml
 
 # Enable audit logging
 sudo mkdir -p /etc/systemd/system/k3s.service.d
