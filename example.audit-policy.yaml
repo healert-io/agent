@@ -1,0 +1,233 @@
+# =============================================================================
+# example.audit-policy.yaml — Healert Kubernetes Audit Policy v0.1.1
+# =============================================================================
+#
+# Copyright 2026 Healert OÜ
+# Licensed under the Apache License, Version 2.0
+# https://www.apache.org/licenses/LICENSE-2.0
+#
+# =============================================================================
+# WHAT THIS FILE DOES
+# =============================================================================
+#
+# Tells the Kubernetes API server which events to write to the audit log
+# and at what detail level. Healert reads this log to detect friction events.
+#
+# Rules are evaluated top-to-bottom — first match wins.
+#
+# =============================================================================
+# CRITICAL LESSONS LEARNED (from production testing on k3s)
+# =============================================================================
+#
+# 1. Deployments are in the "apps" API group — NOT the core "" group.
+#    Putting deployments under group: "" produces NO audit events.
+#    Always use group: "apps" for deployments, statefulsets, daemonsets.
+#
+# 2. Pods, secrets, configmaps, services are in the core "" group.
+#    These must be listed under group: "" to generate audit events.
+#
+# 3. Subresources (exec, portforward, log) must be listed explicitly.
+#    They are NOT included by listing the parent resource alone.
+#
+# 4. Level: RequestResponse includes the full request AND response body.
+#    Required for pipeline-skip rule — the bypass annotation appears in
+#    responseObject.metadata.annotations, not in the audit event itself.
+#    Without RequestResponse level, pipeline-skip cannot be detected.
+#
+# 5. system:k3s-supervisor generates heavy internal traffic that creates
+#    noise. Always suppress it with level: None.
+#
+# =============================================================================
+# DEPLOY
+# =============================================================================
+#
+#   sudo mkdir -p /etc/k3s
+#   sudo cp audit-policy.yaml /etc/k3s/audit-policy.yaml
+#
+#   sudo mkdir -p /etc/systemd/system/k3s.service.d
+#   sudo tee /etc/systemd/system/k3s.service.d/audit.conf << 'CONF'
+#   [Service]
+#   ExecStart=
+#   ExecStart=/usr/local/bin/k3s server \
+#     --kube-apiserver-arg=audit-log-path=/var/log/k3s-audit.log \
+#     --kube-apiserver-arg=audit-policy-file=/etc/k3s/audit-policy.yaml \
+#     --kube-apiserver-arg=audit-log-maxage=7 \
+#     --kube-apiserver-arg=audit-log-maxbackup=3 \
+#     --kube-apiserver-arg=audit-log-maxsize=100
+#   CONF
+#
+#   sudo systemctl daemon-reload
+#   sudo systemctl restart k3s
+#   sleep 15
+#   ls -lh /var/log/k3s-audit.log   # must exist and be growing
+#
+# =============================================================================
+# SET AUDIT LOG PERMISSIONS
+# =============================================================================
+#
+#   sudo groupadd healert 2>/dev/null || true
+#   sudo usermod -aG healert $USER
+#   sudo chown root:healert /var/log/k3s-audit.log
+#   sudo chmod 640 /var/log/k3s-audit.log
+#   newgrp healert   # or log out and back in
+#
+# =============================================================================
+# VERIFY RULES ARE WORKING
+# =============================================================================
+#
+#   # After restarting k3s, trigger each rule and check the audit log:
+#
+#   # kubectl-exec (should produce verb=get subresource=exec)
+#   POD=$(sudo k3s kubectl get pod -n default -l app=my-service \
+#     -o jsonpath='{.items[0].metadata.name}')
+#   sudo k3s kubectl exec $POD -- echo test
+#
+#   # config-drift (should produce verb=patch resource=deployments group=apps)
+#   sudo k3s kubectl patch deployment my-service -n default \
+#     -p '{"spec":{"template":{"metadata":{"annotations":{"test":"1"}}}}}'
+#
+#   # pipeline-skip (needs requestResponse to see responseObject annotations)
+#   sudo k3s kubectl annotate deployment my-service \
+#     policy.admission.k8s.io/bypass=true -n default --overwrite
+#
+#   # Check audit log for events
+#   sudo tail -5 /var/log/k3s-audit.log | python3 -c "
+#   import sys, json
+#   for line in sys.stdin:
+#     try:
+#       e = json.loads(line)
+#       o = e.get('objectRef', {})
+#       actor = e.get('user', {}).get('username', '')
+#       if actor == 'system:admin':
+#         print(f'verb={e[\"verb\"]} resource={o.get(\"resource\")} '
+#               f'group={o.get(\"apiGroup\",\"core\")} actor={actor}')
+#     except: pass
+#   "
+#
+# =============================================================================
+
+apiVersion: audit.k8s.io/v1
+kind: Policy
+rules:
+
+  # ===========================================================================
+  # SUPPRESS NOISY INTERNAL ACTORS (first — prevents logging internal noise)
+  # ===========================================================================
+  # These actors generate constant internal traffic that is not useful for
+  # friction detection. Always suppress before any other rules.
+
+  - level: None
+    users:
+      - system:k3s-supervisor          # k3s internal supervisor — very noisy
+      - system:apiserver               # API server internal calls
+      - system:kube-scheduler          # scheduler decisions
+      - system:kube-controller-manager # controller reconciliation loops
+
+  # ===========================================================================
+  # CORE GROUP RESOURCES ("")
+  # pods, secrets, configmaps, services, serviceaccounts
+  # ===========================================================================
+  # NOTE: pods/exec and pods/portforward are subresources — must be listed
+  # explicitly. They do NOT appear when listing just "pods".
+
+  - level: RequestResponse
+    stages:
+      - ResponseComplete
+    resources:
+      - group: ""          # core API group — pods, secrets, configmaps etc.
+        resources:
+          - pods           # workload pods (config-drift rule)
+          - pods/exec      # kubectl exec (kubectl-exec rule) — SUBRESOURCE
+          - pods/portforward  # kubectl port-forward (port-forward rule) — SUBRESOURCE
+          - pods/log       # kubectl logs (pod-log-access optional rule)
+          - secrets        # secret reads (emergency-access rule)
+          - configmaps     # configmap changes (configmap-drift optional rule)
+          - services       # service changes (service-drift optional rule)
+          - serviceaccounts # service account changes
+          - namespaces     # namespace creation/deletion (namespace-creation rule)
+          - nodes          # node access (node-access optional rule)
+          - persistentvolumes       # PV deletion (pv-deletion optional rule)
+          - persistentvolumeclaims  # PVC deletion
+
+  # ===========================================================================
+  # APPS GROUP RESOURCES
+  # deployments, statefulsets, daemonsets, replicasets, jobs, cronjobs
+  # ===========================================================================
+  # CRITICAL: These resources are in the "apps" API group, NOT the core "".
+  # This was the root cause of pipeline-skip and config-drift not firing
+  # on deployments in early testing. Must use group: "apps" here.
+
+  - level: RequestResponse
+    stages:
+      - ResponseComplete
+    resources:
+      - group: "apps"      # apps API group — ALL workload controllers
+        resources:
+          - deployments    # config-drift, pipeline-skip rules
+          - statefulsets   # config-drift rule (optional)
+          - daemonsets     # config-drift rule (optional)
+          - replicasets    # replicaset drift (optional)
+
+  # ===========================================================================
+  # BATCH GROUP RESOURCES
+  # jobs, cronjobs
+  # ===========================================================================
+
+  - level: RequestResponse
+    stages:
+      - ResponseComplete
+    resources:
+      - group: "batch"     # batch API group — jobs and cronjobs
+        resources:
+          - jobs
+          - cronjobs
+
+  # ===========================================================================
+  # RBAC RESOURCES
+  # ===========================================================================
+
+  - level: Metadata
+    stages:
+      - ResponseComplete
+    resources:
+      - group: "rbac.authorization.k8s.io"
+        resources:
+          - roles
+          - rolebindings
+          - clusterroles
+          - clusterrolebindings
+
+  # ===========================================================================
+  # NETWORKING RESOURCES
+  # ===========================================================================
+
+  - level: Metadata
+    stages:
+      - ResponseComplete
+    resources:
+      - group: "networking.k8s.io"
+        resources:
+          - ingresses
+          - networkpolicies
+
+  # ===========================================================================
+  # CATCH-ALL — everything else at metadata level
+  # ===========================================================================
+  # Captures all other events at minimum detail.
+  # Does not capture request/response bodies — only who did what and when.
+
+  - level: Metadata
+    stages:
+      - ResponseComplete
+    resources:
+      - group: ""
+        resources: ["*"]
+      - group: "apps"
+        resources: ["*"]
+      - group: "batch"
+        resources: ["*"]
+      - group: "extensions"
+        resources: ["*"]
+      - group: "networking.k8s.io"
+        resources: ["*"]
+
