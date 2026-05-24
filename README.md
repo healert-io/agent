@@ -343,11 +343,11 @@ weighted_total = sum(points x 0.5^(age_days / half_life))
 ### Step 1 — Build and import image
 
 ```bash
-docker build -t ghcr.io/healert/agent:0.1.1 .
-docker push ghcr.io/healert/agent:0.1.1
+docker build -t ghcr.io/healert-io/agent:0.1.1 .
+docker push ghcr.io/healert-io/agent:0.1.1
 
 # For k3s (local registry):
-docker save ghcr.io/healert/agent:0.1.1 | sudo k3s ctr images import -
+docker save ghcr.io/healert-io/agent:0.1.1 | sudo k3s ctr images import -
 ```
 
 ### Step 2 — Configure daemonset.yaml
@@ -358,7 +358,7 @@ docker save ghcr.io/healert/agent:0.1.1 | sudo k3s ctr images import -
   value: "http://192.168.x.x:8000"
 
 # Update image tag
-image: ghcr.io/healert/agent:0.1.1
+image: ghcr.io/healert-io/agent:0.1.1
 ```
 
 ### Step 3 — Deploy
