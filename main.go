@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // =============================================================================
-// main.go — Healert Go Agent v0.1.1
+// main.go — Healert Go Agent v0.1.1 Coral
 // =============================================================================
 //
 // Copyright 2026 Healert OÜ
@@ -91,7 +91,7 @@
 // =============================================================================
 
 // =============================================================================
-// main.go — Healert Go Agent v0.1.1
+// main.go — Healert Go Agent v0.1.1 Coral
 // =============================================================================
 //
 // Continuously tails the Kubernetes audit log and sends friction events
@@ -317,7 +317,7 @@ func isValidNamespace(ns string) bool {
 //
 //   TYPE 2 — Shared resource rules 
 //     objectRef.name = secret or configmap name (NOT service name)
-//     Entity maps to resource name in v0.1.1
+//     Entity maps to resource name in v0.1.1 Coral
 //    
 //   TYPE 3 — Cluster-level rules 
 //     objectRef.name = namespace, node, or cluster-scoped resource
@@ -822,7 +822,7 @@ func sanitiseLogValue(v string) string {
 // "system:admin" in the audit log — which starts with "system:" — but
 // system:admin is a HUMAN not an internal controller.
 //
-// v0.1.1: 5-rule classification (current — see below)
+// v0.1.1 Coral: 5-rule classification (current — see below)
 // =============================================================================
 //
 // isInternalSystemActor returns true for Kubernetes-internal service accounts
@@ -997,7 +997,7 @@ func matchRule(rule Rule, e AuditEvent) bool {
 // Returns one FrictionEvent per matching rule.
 // Returns nil if the event is not ResponseComplete stage.
 //
-// Entity ref construction (v0.1.1 — auto-namespace):
+// Entity ref construction (v0.1.1 Coral — auto-namespace):
 //   component:{kubernetes_namespace}/{normalised_object_name}
 //
 //   The Kubernetes namespace from the audit event is used directly as the
@@ -1344,7 +1344,7 @@ func processLine(line string, cfg agentConfig, rules []Rule, sent *int) {
 func main() {
 	cfg := loadConfig()
 
-	log.Printf("Healert Agent v0.1.1")
+	log.Printf("Healert Agent v0.1.1 Coral")
 	log.Printf("─────────────────────────────────────────────────────────")
 	log.Printf("Backend:    %s", cfg.backendURL)
 	log.Printf("Audit log:  %s", cfg.auditLogPath)
