@@ -17,7 +17,7 @@ if [[ -f "$HOME/.healert-config" ]]; then
 fi
 
 # =============================================================================
-# healert.sh — Healert Platform Management Script
+# healert.sh — Healert Platform Management Script v0.1.1 Coral
 # =============================================================================
 #
 # Copyright 2026 Healert OÜ
