@@ -301,7 +301,7 @@ config:
 
 The agent automatically excludes its own namespace (K8S_NAMESPACE) from all detections.
 
-### Active Rules (v0.1.1 Coral)
+### Active Rules (v0.1.0)
 
 | Rule | Severity | Type | What It Detects |
 |---|---|---|---|
@@ -311,7 +311,7 @@ The agent automatically excludes its own namespace (K8S_NAMESPACE) from all dete
 | `port-forward` | Medium | TYPE 1 Workload | Direct port-forward to pods |
 | `emergency-access` | Medium | TYPE 2 Shared | Direct secret access |
 
-### Auto-Namespace Entity Resolution (v0.1.1 Coral)
+### Auto-Namespace Entity Resolution (v0.1.0)
 
 The agent uses the Kubernetes event namespace directly as the Backstage catalog namespace:
 
@@ -377,7 +377,7 @@ kubectl logs -n healert-system -l app=healert-agent --tail=20
 
 Expected:
 ```
-Healert Agent v0.1.1 Coral
+Healert Agent v0.1.0
 Rules:      5 loaded
 Ignored namespaces (8):
   - kube-system
